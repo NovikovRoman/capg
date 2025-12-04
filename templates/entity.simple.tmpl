@@ -1,0 +1,10 @@
+package models
+
+// {{.EntityName}} structure.
+type {{.EntityName}} struct {
+	ID int64 `db:"id" autoincrement:"true"`
+}
+
+func ({{.EntitySymb}} *{{.EntityName}}) GetID() int64 {
+	return {{.EntitySymb}}.ID
+}

@@ -1,0 +1,26 @@
+package db
+
+import (
+	"errors"
+	"strings"
+
+	"github.com/lib/pq"
+)
+
+func IsSerializationError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if pqErr, ok := err.(*pq.Error); ok {
+		return pqErr.Code == "40001" || pqErr.Code == "40P01"
+	}
+	var pErr *pq.Error
+	if errors.As(err, &pErr) {
+		return pErr.Code == "40001" || pErr.Code == "40P01"
+	}
+	if strings.Contains(err.Error(), "could not serialize access due to read/write dependencies among") {
+		return true
+	}
+	return false
+}

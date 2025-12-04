@@ -1,0 +1,24 @@
+package repository
+
+import (
+	"context"
+
+	{{.ModulePath}}/internal/models
+	"github.com/jmoiron/sqlx"
+)
+
+type {{.EntityName}} struct {
+	table string
+	db    *sqlx.DB
+}
+
+func New{{.EntityName}}(db *sqlx.DB) *{{.EntityName}} {
+	return &{{.EntityName}}{
+		table: "{{.EntityTable}}",
+		db:    db,
+	}
+}
+
+func (r {{.EntityName}}) Table() string {
+	return r.table
+}

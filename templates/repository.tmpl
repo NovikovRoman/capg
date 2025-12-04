@@ -1,0 +1,35 @@
+package repository
+
+import (
+	"context"
+
+	"{{.ModulePath}}/internal/db"
+	"{{.ModulePath}}/internal/models"
+	"github.com/jmoiron/sqlx"
+)
+
+type {{.EntityName}} struct {
+	table string
+	db    *sqlx.DB
+}
+
+func New{{.EntityName}}(db *sqlx.DB) *{{.EntityName}} {
+	return &{{.EntityName}}{
+		table: "{{.EntityTable}}",
+		db:    db,
+	}
+}
+
+func (r {{.EntityName}}) Table() string {
+	return r.table
+}
+
+func (r *{{.EntityName}}) ByID(ctx context.Context, id int64) (models.{{.EntityName}}, error) {
+	var {{.EntitySymb}} models.{{.EntityName}}
+	err := r.db.GetContext(ctx, &{{.EntitySymb}}, "SELECT * FROM "+r.table+" WHERE id = $1", id)
+	return {{.EntitySymb}}, err
+}
+
+func (r *{{.EntityName}}) Save(ctx context.Context, {{.EntitySymb}} *models.{{.EntityName}}) error {
+	return db.Save(ctx, r.db, r.table, {{.EntitySymb}});
+}

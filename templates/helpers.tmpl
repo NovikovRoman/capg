@@ -1,0 +1,317 @@
+package db
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"reflect"
+	"strings"
+	"time"
+	"unsafe"
+
+	"github.com/jmoiron/sqlx"
+	"github.com/jmoiron/sqlx/reflectx"
+)
+
+type IDType interface {
+	int | int32 | int64 | string
+}
+
+type SimpleBaseEntity[T IDType] interface {
+	GetID() T
+}
+
+type BaseEntity[T IDType] interface {
+	SimpleBaseEntity[T]
+
+	GetCreatedAt() time.Time
+	GetUpdatedAt() time.Time
+	GetDeletedAt() *time.Time
+}
+
+const (
+	tagName          = "db"
+	tagReadOnly      = "readonly"
+	tagAutoincrement = "autoincrement"
+	tagConflict      = "conflict"
+)
+
+func emptyID[T IDType](ent SimpleBaseEntity[T]) bool {
+	id := ent.GetID()
+	switch v := any(id).(type) {
+	case string:
+		return v == ""
+	case int:
+	case int32:
+	case int64:
+		return v <= 0
+	}
+	return true
+}
+
+// Save saves the record to the DB.
+//
+// New record - creates in a DB, existing - updates in a DB. If the entry:
+//
+//   - domain.SimpleBaseEntity regular update of a record in the DB.
+//
+//   - domain.BaseEntity regular update of the record in the DB and the auto-update of the date
+//     in the UpdatedAt field.
+func Save[T IDType](ctx context.Context, db *sqlx.DB, table string, ent SimpleBaseEntity[T]) (err error) {
+	if emptyID(ent) {
+		return Create(ctx, db, table, ent)
+	}
+
+	if v, ok := ent.(BaseEntity[T]); ok {
+		setUpdatedAt(v, time.Now())
+	}
+
+	query := "UPDATE " + table + " SET " + fieldsForUpdate(ent) + " WHERE id=:id"
+	_, err = db.NamedExecContext(ctx, query, ent)
+	return
+}
+
+func SaveOrUpdateAny(ctx context.Context, db *sqlx.DB, table string, ent any) error {
+	conflicts := conflictFields(ent)
+	if len(conflicts) == 0 {
+		return errors.New("Conflict fields not found.")
+	}
+
+	fields := TableFields(ent, true)
+	set := make([]string, len(fields))
+	values := make([]string, len(fields))
+	updated := make([]string, len(fields))
+	for i, name := range TableFields(ent, true) {
+		set[i] = name
+		values[i] = ":" + name
+		updated[i] = name + "=EXCLUDED." + name
+	}
+
+	query := `INSERT INTO ` + table + ` (` + strings.Join(set, ",") + `) VALUES (` + strings.Join(values, ",") + `)
+	ON CONFLICT (` + strings.Join(conflicts, ",") + `)
+	DO UPDATE SET ` + strings.Join(updated, ",")
+	_, err := db.NamedExecContext(ctx, query, ent)
+	return err
+}
+
+func SaveAny(ctx context.Context, db *sqlx.DB, table string, ent any) (bool, error) {
+	set, values := FieldsForInsert(ent)
+	query := "INSERT INTO " + table + " (" + set + ") VALUES (" + values + ") ON CONFLICT DO NOTHING"
+	res, err := db.NamedExecContext(ctx, query, ent)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+func SaveMultiAny(ctx context.Context, db *sqlx.DB, table string, items []any, conflictDoNothing bool) error {
+	if len(items) == 0 {
+		return nil
+	}
+	names := TableFields(items[0], true)
+	b := bytes.Repeat([]byte("?,"), len(names))
+	values := strings.Repeat("("+string(b[:len(b)-1])+"),", len(items))
+	args := make([]any, len(items)*len(names))
+	for i, c := range items {
+		for ii, name := range names {
+			args[i*len(names)+ii], _ = fieldValueByDBTag(c, name)
+		}
+	}
+	values = strings.TrimRight(values, ",")
+	query := "INSERT INTO " + table + " (" + strings.Join(names, ",") + ") VALUES " + values
+	if conflictDoNothing {
+		query += " ON CONFLICT DO NOTHING"
+	}
+	_, err := db.ExecContext(ctx, db.Rebind(query), args...)
+	return err
+}
+
+// Create creates a record in the DB.
+//
+// If the entry:
+//
+//   - domain.SimpleBaseEntity the usual creation of a record in the DB.
+//
+//   - domain.BaseEntity the usual creation of a record in the DB, setting CreatedAt to the current time,
+//     UpdatedAt if not set - to the current time, DeletedAt if not set - nil.
+func Create[T IDType](ctx context.Context, db *sqlx.DB, table string, ent SimpleBaseEntity[T]) (err error) {
+	if !emptyID(ent) {
+		return Save(ctx, db, table, ent)
+	}
+
+	if vEnt, ok := ent.(BaseEntity[T]); ok {
+		if vEnt.GetCreatedAt().IsZero() {
+			setCreatedAt(vEnt, time.Now())
+		}
+		if vEnt.GetUpdatedAt().IsZero() {
+			setUpdatedAt(vEnt, time.Now())
+		}
+		if vEnt.GetDeletedAt() != nil && vEnt.GetDeletedAt().IsZero() {
+			setDeletedAt(vEnt, nil)
+		}
+	}
+
+	set, values := FieldsForInsert(ent)
+	nameID, dbNameID := FindAutoincrement(ent)
+	if nameID == "" {
+		query := "INSERT INTO " + table + " (" + set + ") VALUES (" + values + ")"
+		_, err = db.NamedExecContext(ctx, query, ent)
+		return
+	}
+
+	var rows *sqlx.Rows
+	query := "INSERT INTO " + table + " (" + set + ") VALUES (" + values + ") RETURNING " + dbNameID
+	if rows, err = db.NamedQueryContext(ctx, query, ent); err != nil {
+		return
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return
+	}
+
+	var id any
+	if err = rows.Scan(&id); err != nil {
+		return
+	}
+
+	v := reflect.ValueOf(ent)
+	if v.Kind() == reflect.Pointer {
+		v = v.Elem()
+	}
+	switch newID := id.(type) {
+	case int:
+		v.FieldByName(nameID).SetInt(int64(newID))
+	case int32:
+		v.FieldByName(nameID).SetInt(int64(newID))
+	case int64:
+		v.FieldByName(nameID).SetInt(newID)
+	case string:
+		v.FieldByName(nameID).SetString(newID)
+	}
+	return
+}
+
+func setCreatedAt[T IDType](ent BaseEntity[T], t time.Time) {
+	v := reflect.ValueOf(ent)
+	if v.Kind() == reflect.Pointer {
+		v = v.Elem()
+	}
+	v.FieldByName("CreatedAt").Set(reflect.ValueOf(t))
+}
+
+func setUpdatedAt[T IDType](ent BaseEntity[T], t time.Time) {
+	v := reflect.ValueOf(ent)
+	if v.Kind() == reflect.Pointer {
+		v = v.Elem()
+	}
+	v.FieldByName("UpdatedAt").Set(reflect.ValueOf(t))
+}
+
+func setDeletedAt[T IDType](ent BaseEntity[T], t *time.Time) {
+	v := reflect.ValueOf(ent)
+	if v.Kind() == reflect.Pointer {
+		v = v.Elem()
+	}
+
+	if t != nil {
+		v.FieldByName("DeletedAt").SetPointer(unsafe.Pointer(t))
+		return
+	}
+	v.FieldByName("DeletedAt").SetPointer(nil)
+}
+
+func ToAnySlice[T any](s []T) []any {
+	res := make([]any, len(s))
+	for i, v := range s {
+		res[i] = v
+	}
+	return res
+}
+
+func FieldsForInsert(ent any) (set string, values string) {
+	for i, name := range TableFields(ent, true) {
+		if i > 0 {
+			set += ","
+			values += ","
+		}
+		set += name + ""
+		values += ":" + name
+	}
+	return
+}
+
+func fieldsForUpdate(ent any) (set string) {
+	for i, name := range TableFields(ent, false) {
+		if i > 0 {
+			set += ","
+		}
+		set += name + "=:" + name
+	}
+	return
+}
+
+func TableFields(ent any, forInsert bool) (fields []string) {
+	m := reflectx.NewMapperFunc(tagName, func(s string) string { return s })
+	for _, n := range m.TypeMap(reflect.TypeOf(ent)).Names {
+		if n.Field.Tag.Get(tagReadOnly) == "true" {
+			continue
+		}
+		if forInsert && n.Field.Tag.Get(tagAutoincrement) == "true" {
+			continue
+		}
+		if len(n.Index) == 1 {
+			fields = append(fields, n.Path)
+		}
+	}
+	return
+}
+
+func conflictFields(ent any) []string {
+	fields := []string{}
+	m := reflectx.NewMapperFunc(tagName, func(s string) string { return s })
+	for _, n := range m.TypeMap(reflect.TypeOf(ent)).Names {
+		if n.Field.Tag.Get(tagConflict) != "true" {
+			continue
+		}
+		if len(n.Index) == 1 {
+			fields = append(fields, n.Path)
+		}
+	}
+	return fields
+}
+
+func FindAutoincrement(ent any) (string, string) {
+	name := ""
+	dbName := ""
+	m := reflectx.NewMapperFunc(tagAutoincrement, func(s string) string { return s })
+	for _, n := range m.TypeMap(reflect.TypeOf(ent)).Names {
+		if n.Field.Tag.Get(tagAutoincrement) != "true" {
+			continue
+		}
+		dbName = n.Field.Tag.Get(tagName)
+		name = n.Field.Name
+		break
+	}
+	return name, dbName
+}
+
+func fieldValueByDBTag(v any, dbTag string) (any, bool) {
+	val := reflect.ValueOf(v)
+	typ := reflect.TypeOf(v)
+
+	// Если передан указатель, разыменовываем
+	if val.Kind() == reflect.Pointer {
+		val = val.Elem()
+		typ = typ.Elem()
+	}
+
+	// Проходим по всем полям
+	for i := 0; i < val.NumField(); i++ {
+		field := typ.Field(i)
+		if tag := field.Tag.Get("db"); tag == dbTag {
+			return val.Field(i).Interface(), true
+		}
+	}
+	return nil, false
+}
