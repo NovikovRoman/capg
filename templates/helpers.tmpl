@@ -42,7 +42,9 @@ func emptyID[T IDType](ent SimpleBaseEntity[T]) bool {
 	case string:
 		return v == ""
 	case int:
+		return v <= 0
 	case int32:
+		return v <= 0
 	case int64:
 		return v <= 0
 	}
@@ -71,30 +73,47 @@ func Save[T IDType](ctx context.Context, db *sqlx.DB, table string, ent SimpleBa
 	return
 }
 
-func SaveOrUpdateAny(ctx context.Context, db *sqlx.DB, table string, ent any) error {
+func SaveOrUpdateT[T any](ctx context.Context, db *sqlx.DB, table string, ent T) error {
 	conflicts := conflictFields(ent)
 	if len(conflicts) == 0 {
-		return errors.New("Conflict fields not found.")
+		return errors.New("conflict fields not found")
 	}
 
 	fields := TableFields(ent, true)
+	if len(fields) == 0 {
+		return errors.New("no table fields found")
+	}
+
+	conflictSet := make(map[string]bool, len(conflicts))
+	for _, c := range conflicts {
+		conflictSet[c] = true
+	}
+
 	set := make([]string, len(fields))
 	values := make([]string, len(fields))
-	updated := make([]string, len(fields))
-	for i, name := range TableFields(ent, true) {
+	updated := make([]string, 0, len(fields))
+
+	for i, name := range fields {
 		set[i] = name
 		values[i] = ":" + name
-		updated[i] = name + "=EXCLUDED." + name
+		if !conflictSet[name] {
+			updated = append(updated, name+"=EXCLUDED."+name)
+		}
+	}
+
+	if len(updated) == 0 {
+		return errors.New("no fields to update after excluding conflict fields")
 	}
 
 	query := `INSERT INTO ` + table + ` (` + strings.Join(set, ",") + `) VALUES (` + strings.Join(values, ",") + `)
-	ON CONFLICT (` + strings.Join(conflicts, ",") + `)
-	DO UPDATE SET ` + strings.Join(updated, ",")
+    ON CONFLICT (` + strings.Join(conflicts, ",") + `)
+    DO UPDATE SET ` + strings.Join(updated, ",")
+
 	_, err := db.NamedExecContext(ctx, query, ent)
 	return err
 }
 
-func SaveAny(ctx context.Context, db *sqlx.DB, table string, ent any) (bool, error) {
+func SaveT[T any](ctx context.Context, db *sqlx.DB, table string, ent T) (bool, error) {
 	set, values := FieldsForInsert(ent)
 	query := "INSERT INTO " + table + " (" + set + ") VALUES (" + values + ") ON CONFLICT DO NOTHING"
 	res, err := db.NamedExecContext(ctx, query, ent)
@@ -105,7 +124,7 @@ func SaveAny(ctx context.Context, db *sqlx.DB, table string, ent any) (bool, err
 	return n > 0, err
 }
 
-func SaveMultiAny(ctx context.Context, db *sqlx.DB, table string, items []any, conflictDoNothing bool) error {
+func SaveMany[T any](ctx context.Context, db *sqlx.DB, table string, items []T, conflictDoNothing bool) error {
 	if len(items) == 0 {
 		return nil
 	}
@@ -165,7 +184,9 @@ func Create[T IDType](ctx context.Context, db *sqlx.DB, table string, ent Simple
 	if rows, err = db.NamedQueryContext(ctx, query, ent); err != nil {
 		return
 	}
-	defer rows.Close()
+	defer func() {
+		_ = rows.Close()
+	}()
 	if !rows.Next() {
 		return
 	}
@@ -219,14 +240,6 @@ func setDeletedAt[T IDType](ent BaseEntity[T], t *time.Time) {
 		return
 	}
 	v.FieldByName("DeletedAt").SetPointer(nil)
-}
-
-func ToAnySlice[T any](s []T) []any {
-	res := make([]any, len(s))
-	for i, v := range s {
-		res[i] = v
-	}
-	return res
 }
 
 func FieldsForInsert(ent any) (set string, values string) {

@@ -5,17 +5,41 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	migrate "{{.ModulePath}}/migrations/pg"
+	migrate "github.com/NovikovRoman/waltrack/migrations/pg"
 	"github.com/jmoiron/sqlx"
 )
 
-func Connect(ctx context.Context) (*sqlx.DB, error) {
-	db, err := sqlx.Connect("postgres", os.Getenv("DATABASE_URL"))
+// ConnectWithTZ устанавливает TimeZone в строке подключения: заменяет, если задан, добавляет, если нет.
+func ConnectWithTZ(ctx context.Context, dsn, tz string) (*sqlx.DB, error) {
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			return nil, err
+		}
+		q := u.Query()
+		q.Set("TimeZone", tz)
+		u.RawQuery = q.Encode()
+		return Connect(ctx, u.String())
+	}
+
+	parts := strings.Fields(dsn)
+	for i, part := range parts {
+		if strings.HasPrefix(strings.ToLower(part), "timezone=") {
+			parts[i] = "TimeZone=" + tz
+			return Connect(ctx, strings.Join(parts, " "))
+		}
+	}
+	return Connect(ctx, strings.TrimSpace(dsn+" TimeZone="+tz))
+}
+
+func Connect(ctx context.Context, dsn string) (*sqlx.DB, error) {
+	db, err := sqlx.Connect("postgres", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("db: %w", err)
 	}
