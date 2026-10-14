@@ -48,10 +48,6 @@ func Connect(ctx context.Context, dsn string) (*sqlx.DB, error) {
 	db.SetMaxIdleConns(2)
 	db.SetConnMaxLifetime(time.Minute)
 
-	if err = isolation(ctx, db); err != nil {
-		return nil, fmt.Errorf("db isolation: %w", err)
-	}
-
 	step, _ := strconv.Atoi(strings.TrimSpace(os.Getenv("MIGRATE_STEP")))
 	force := strings.TrimSpace(os.Getenv("MIGRATE_FORCE")) != ""
 
@@ -66,31 +62,4 @@ func Connect(ctx context.Context, dsn string) (*sqlx.DB, error) {
 		err = fmt.Errorf("migrate: %w", err)
 	}
 	return db, err
-}
-
-func TxBegin(ctx context.Context, db *sqlx.DB) (*sqlx.Tx, error) {
-	tx, err := db.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
-	if err != nil {
-		return nil, fmt.Errorf("txBegin: %w", err)
-	}
-	return tx, nil
-}
-
-func TxRollback(tx *sqlx.Tx, err error) error {
-	if e := tx.Rollback(); e != nil {
-		err = errors.Join(err, fmt.Errorf("txRollback: %w", e))
-	}
-	return err
-}
-
-func isolation(ctx context.Context, db *sqlx.DB) error {
-	opts := &sql.TxOptions{
-		Isolation: sql.LevelSerializable,
-		ReadOnly:  false,
-	}
-	tx, err := db.BeginTxx(ctx, opts)
-	if err != nil {
-		return err
-	}
-	return tx.Commit()
 }
