@@ -35,6 +35,15 @@ func TestWithTimeZone(t *testing.T) {
 			t.Errorf("expected error for %q", input)
 		}
 	}
+	for _, input := range []string{
+		"postgres://user:pass@localhost/db?sslmode=verify-full%ZZ",
+		"postgres://localhost/db?application_name=bad%XX&sslmode=require",
+		"postgres://localhost/db?sslmode=require;application_name=test",
+	} {
+		if out, err := withTimeZone(input, "UTC"); err == nil {
+			t.Errorf("expected invalid URL query error for %q, got %q", input, out)
+		}
+	}
 	if _, err := withTimeZone("host=localhost", "bad\x00zone"); err == nil || !strings.Contains(err.Error(), "NUL") {
 		t.Fatalf("NUL timezone error: %v", err)
 	}

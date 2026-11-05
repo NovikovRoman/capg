@@ -13,17 +13,22 @@ func ({{.ReceiverName}} {{.JSONTypeName}}) String() string {
 	return string(b)
 }
 
-func ({{.ReceiverName}} *{{.JSONTypeName}}) Scan(val any) (err error) {
+func ({{.ReceiverName}} *{{.JSONTypeName}}) Scan(val any) error {
+	var data []byte
 	switch v := val.(type) {
 	case []byte:
-		return json.Unmarshal(v, &{{.ReceiverName}})
-
+		data = v
 	case string:
-		return json.Unmarshal([]byte(v), &{{.ReceiverName}})
-
+		data = []byte(v)
 	default:
-		return fmt.Errorf("Unsupported type: %T. ", v)
+		return fmt.Errorf("unsupported type: %T", v)
 	}
+	var value {{.JSONTypeName}}
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	*{{.ReceiverName}} = value
+	return nil
 }
 
 func ({{.ReceiverName}} {{.JSONTypeName}}) Value() (driver.Value, error) {

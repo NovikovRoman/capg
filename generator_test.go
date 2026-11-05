@@ -190,12 +190,30 @@ func TestGeneratedProject(t *testing.T) {
 	modelTest := `package models
 import "testing"
 func TestScanReset(t *testing.T) {
- for _, input := range []any{"{}", []byte("{}"), "[]", []byte("[]")} {
-  v := Value{Field1: 42, Field2: "old", Field3: true}
-  if err := v.Scan(input); err != nil || v != (Value{}) {
-   t.Fatalf("Scan(%q) = %#v, %v", input, v, err)
-  }
- }
+    for _, input := range []any{"{}", []byte("{}"), "[]", []byte("[]")} {
+        v := Value{Field1: 42, Field2: "old", Field3: true}
+        if err := v.Scan(input); err != nil || v != (Value{}) {
+            t.Fatalf("Scan(%q) = %#v, %v", input, v, err)
+        }
+    }
+}
+func TestArrayScan(t *testing.T) {
+    for _, input := range []any{"null", []byte("null")} {
+        v := Values{"old"}
+        if err := v.Scan(input); err != nil || v != nil {
+            t.Fatalf("Scan(%q) = %#v, %v; want nil", input, v, err)
+        }
+    }
+    for _, input := range []any{"[]", []byte("[]"), "[\"new\"]", []byte("[\"new\"]")} {
+        v := Values{"old"}
+        if err := v.Scan(input); err != nil { t.Fatalf("Scan(%q): %v", input, err) }
+        if len(v) > 0 && v[0] != "new" { t.Fatalf("Scan(%q) = %#v", input, v) }
+        if len(v) == 0 && v == nil { t.Fatalf("Scan(%q) = nil; want empty array", input) }
+    }
+    v := Values{"old"}
+    if err := v.Scan("[\"new\", 42]"); err == nil || len(v) != 1 || v[0] != "old" {
+        t.Fatalf("invalid Scan changed value: %#v, %v", v, err)
+    }
 }
 `
 	if err := os.WriteFile(filepath.Join(project, "internal", "models", "generated_test.go"), []byte(modelTest), 0644); err != nil {

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
+	"path/filepath"
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
@@ -13,6 +15,11 @@ import (
 )
 
 func newMigrate(ctx context.Context, db *sql.DB, path string, force bool) (m *migrate.Migrate, err error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve migration path %q: %w", path, err)
+	}
+	sourceURL := (&url.URL{Scheme: "file", Path: filepath.ToSlash(absPath)}).String()
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return nil, err
@@ -25,7 +32,7 @@ func newMigrate(ctx context.Context, db *sql.DB, path string, force bool) (m *mi
 		return nil, errors.Join(err, conn.Close())
 	}
 
-	m, err = migrate.NewWithDatabaseInstance(fmt.Sprintf("file://%s", path), "migrations", driver)
+	m, err = migrate.NewWithDatabaseInstance(sourceURL, "migrations", driver)
 	if err != nil {
 		return nil, errors.Join(err, driver.Close())
 	}

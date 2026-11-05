@@ -31,7 +31,10 @@ func withTimeZone(dsn, tz string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		q := u.Query()
+		q, err := url.ParseQuery(u.RawQuery)
+		if err != nil {
+			return "", fmt.Errorf("invalid connection URL query: %w", err)
+		}
 		for key := range q {
 			if strings.EqualFold(key, "timezone") {
 				q.Del(key)
