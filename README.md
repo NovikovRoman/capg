@@ -198,40 +198,50 @@ the initial migration creates `text*` domains, which must not already exist.
 
 ## Transactions
 
-Generated repository constructors accept either `*sqlx.DB` or `*sqlx.Tx` through
-`db.Executor`. Pass the same transaction to every repository and helper involved
-in one unit of work. For example, after generating both `Product` and `Order`:
+Generated repository constructors and database helpers accept `*sqlx.DB`. A
+repository method can start and manage its own transaction. For example, after
+adding the `name` column as in the PostgreSQL example, add this method to
+`internal/repository/product.go`:
 
 ```go
-func saveBoth(ctx context.Context, conn *sqlx.DB) error {
-    tx, err := conn.BeginTxx(ctx, nil)
+// RenamePair changes both active products, or neither if an operation fails.
+func (r *Product) RenamePair(ctx context.Context, firstID, secondID int64, firstName, secondName string) error {
+    tx, err := r.db.BeginTxx(ctx, nil)
     if err != nil {
         return err
     }
-    defer tx.Rollback() // releases the transaction if an earlier step fails
+    defer func() { _ = tx.Rollback() }()
 
-    products := repository.NewProduct(tx)
-    orders := repository.NewOrder(tx)
-    if err := products.Save(ctx, &models.Product{}); err != nil {
-        return err
-    }
-    if err := orders.Save(ctx, &models.Order{}); err != nil {
-        return err
+    query := "UPDATE " + pq.QuoteIdentifier(r.table) +
+        " SET name = $1, updated_at = $2 WHERE id = $3 AND deleted_at IS NULL"
+    now := time.Now().UTC()
+    for _, change := range []struct {
+        id   int64
+        name string
+    }{{firstID, firstName}, {secondID, secondName}} {
+        result, err := tx.ExecContext(ctx, query, change.name, now, change.id)
+        if err != nil {
+            return err
+        }
+        affected, err := result.RowsAffected()
+        if err != nil {
+            return err
+        }
+        if affected == 0 {
+            return sql.ErrNoRows
+        }
     }
     return tx.Commit()
 }
 ```
 
-The caller owns the transaction and is responsible for committing or rolling it
-back. Do not mix repositories using `conn` and `tx` for operations that must be
-atomic. The context passed to `BeginTxx` controls the transaction lifetime;
-individual methods also receive their own context. A cancelled operation returns
-an error, and the caller must handle the transaction appropriately.
-
-Database rollback does not restore Go objects: IDs and timestamps assigned during
-a rolled-back insert remain in memory. PostgreSQL sequence values can also be
-consumed even when a transaction is rolled back. Discard or reset affected model
-values before reuse.
+The generated file already imports `context`, `database/sql`, `time`, and `pq`.
+The method owns the transaction: every query in the unit of work uses `tx`, and
+it commits on success or rolls back on failure. The context passed to `BeginTxx`
+controls the transaction lifetime. Generated methods and helpers use the pool, so
+calling them inside this method does **not** include them in `tx`. To share a
+transaction across repositories or helpers, adapt the generated code to the
+application's needs.
 
 ## Commands
 

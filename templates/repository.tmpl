@@ -7,18 +7,19 @@ import (
 
 	"{{.GoModulePath}}/internal/db"
 	"{{.GoModulePath}}/internal/models"
+	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 )
 
 type {{.ModelTypeName}} struct {
 	table string
-	db    db.Executor
+	db    *sqlx.DB
 }
 
-func New{{.ModelTypeName}}(executor db.Executor) *{{.ModelTypeName}} {
+func New{{.ModelTypeName}}(conn *sqlx.DB) *{{.ModelTypeName}} {
 	return &{{.ModelTypeName}}{
 		table: "{{.DatabaseTableName}}",
-		db:    executor,
+		db:    conn,
 	}
 }
 

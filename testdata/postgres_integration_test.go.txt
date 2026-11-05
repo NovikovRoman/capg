@@ -216,12 +216,8 @@ func TestGeneratedPostgres(t *testing.T) {
 	}
 	repo := repository.NewProduct(conn)
 	var nilDB *sqlx.DB
-	var nilTx *sqlx.Tx
 	if err := db.Save(ctx, nilDB, "products", &models.Product{}); err == nil {
-		t.Fatal("nil database executor should fail")
-	}
-	if err := db.Save(ctx, nilTx, "products", &models.Product{}); err == nil {
-		t.Fatal("nil transaction executor should fail")
+		t.Fatal("nil database should fail")
 	}
 	var nilProduct *models.Product
 	if err := db.Save(ctx, conn, "products", nilProduct); err == nil {
@@ -325,125 +321,42 @@ func TestGeneratedPostgres(t *testing.T) {
 	if err := conn.GetContext(ctx, &upsertValue, `SELECT value FROM "select" WHERE id=1`); err != nil || upsertValue != "second" {
 		t.Fatalf("upsert value: %q, %v", upsertValue, err)
 	}
-	t.Run("transaction commit across repositories", func(t *testing.T) {
-		tx, err := conn.BeginTxx(ctx, nil)
-		if err != nil {
+	t.Run("repository transaction commit and rollback", func(t *testing.T) {
+		if _, err := conn.ExecContext(ctx, `ALTER TABLE products ADD COLUMN name TEXT NOT NULL DEFAULT ''`); err != nil {
 			t.Fatal(err)
 		}
-		defer tx.Rollback()
-		products := repository.NewProduct(tx)
-		orders := repository.NewOrder(tx)
-		p, o := &models.Product{}, &models.Order{}
-		if err := products.Save(ctx, p); err != nil {
+		first, second := &models.Product{}, &models.Product{}
+		if err := repo.Save(ctx, first); err != nil {
 			t.Fatal(err)
 		}
-		if err := orders.Save(ctx, o); err != nil {
+		if err := repo.Save(ctx, second); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := products.ByID(ctx, p.ID); err != nil {
+		if err := repo.RenamePair(ctx, first.ID, second.ID, "first", "second"); err != nil {
 			t.Fatal(err)
 		}
-		if err := products.Delete(ctx, p.ID); err != nil {
-			t.Fatal(err)
+		var name string
+		if err := conn.GetContext(ctx, &name, `SELECT name FROM products WHERE id=$1`, first.ID); err != nil || name != "first" {
+			t.Fatalf("committed name = %q, %v", name, err)
 		}
-		if _, err := products.ByIDIncludingDeleted(ctx, p.ID); err != nil {
-			t.Fatal(err)
+		if err := repo.RenamePair(ctx, first.ID, -1, "changed", "missing"); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("expected missing product error: %v", err)
 		}
-		if err := products.Restore(ctx, p.ID); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := repo.ByID(ctx, p.ID); !errors.Is(err, sql.ErrNoRows) {
-			t.Fatalf("uncommitted product visible: %v", err)
-		}
-		if _, err := repository.NewOrder(conn).ByID(ctx, o.ID); !errors.Is(err, sql.ErrNoRows) {
-			t.Fatalf("uncommitted order visible: %v", err)
-		}
-		if err := tx.Commit(); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := repo.ByID(ctx, p.ID); err != nil {
-			t.Fatalf("committed product: %v", err)
-		}
-		if _, err := repository.NewOrder(conn).ByID(ctx, o.ID); err != nil {
-			t.Fatalf("committed order: %v", err)
+		if err := conn.GetContext(ctx, &name, `SELECT name FROM products WHERE id=$1`, first.ID); err != nil || name != "first" {
+			t.Fatalf("rollback name = %q, %v", name, err)
 		}
 	})
-
-	t.Run("transaction rollback after SQL error", func(t *testing.T) {
-		tx, err := conn.BeginTxx(ctx, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback()
-		p, o := &models.Product{}, &models.Order{}
-		if err := repository.NewProduct(tx).Save(ctx, p); err != nil {
-			t.Fatal(err)
-		}
-		if err := repository.NewOrder(tx).Save(ctx, o); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO "select" (id, value) VALUES (1, 'duplicate')`); err == nil {
-			t.Fatal("expected unique constraint error")
-		}
-		if err := tx.Rollback(); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := repo.ByID(ctx, p.ID); !errors.Is(err, sql.ErrNoRows) {
-			t.Fatalf("rolled-back product visible: %v", err)
-		}
-		if _, err := repository.NewOrder(conn).ByID(ctx, o.ID); !errors.Is(err, sql.ErrNoRows) {
-			t.Fatalf("rolled-back order visible: %v", err)
-		}
-	})
-
-	t.Run("transaction helpers and cancellation", func(t *testing.T) {
-		var orderCountBefore int
-		if err := conn.GetContext(ctx, &orderCountBefore, `SELECT COUNT(*) FROM "order"`); err != nil {
-			t.Fatal(err)
-		}
-		tx, err := conn.BeginTxx(ctx, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback()
-		if inserted, err := db.SaveT(ctx, tx, "order", models.Order{}); err != nil || !inserted {
-			t.Fatalf("SaveT: %v, %v", inserted, err)
-		}
-		if err := db.SaveMany(ctx, tx, "order", []models.Order{{}}, false); err != nil {
-			t.Fatalf("SaveMany: %v", err)
-		}
-		if err := db.SaveOrUpdateT(ctx, tx, "select", upsertEntity{ID: 2, Value: "in transaction"}); err != nil {
-			t.Fatalf("upsert: %v", err)
-		}
-		widgetTx := &models.Widget{}
-		if err := db.Create(ctx, tx, "widgets", widgetTx); err != nil {
-			t.Fatalf("Create: %v", err)
-		}
-		if got := repository.NewWidget(tx).Table(); got != "widgets" {
-			t.Fatalf("simple repository table: %q", got)
-		}
-		cancelled, cancel := context.WithCancel(ctx)
-		cancel()
-		if _, err := repository.NewProduct(tx).ByID(cancelled, product.ID); !errors.Is(err, context.Canceled) {
-			t.Fatalf("cancelled read: %v", err)
-		}
-		if err := repository.NewProduct(tx).Save(cancelled, &models.Product{}); !errors.Is(err, context.Canceled) {
-			t.Fatalf("cancelled save: %v", err)
-		}
-		if err := tx.Rollback(); err != nil {
-			t.Fatal(err)
-		}
-		var orderCountAfter, insertedCount int
-		if err := conn.GetContext(ctx, &orderCountAfter, `SELECT COUNT(*) FROM "order"`); err != nil || orderCountAfter != orderCountBefore {
-			t.Fatalf("helper rows not rolled back: before=%d after=%d, %v", orderCountBefore, orderCountAfter, err)
-		}
-		if err := conn.GetContext(ctx, &insertedCount, `SELECT COUNT(*) FROM "select" WHERE id=2`); err != nil || insertedCount != 0 {
-			t.Fatalf("upsert not rolled back: %d, %v", insertedCount, err)
-		}
-		if err := conn.GetContext(ctx, &insertedCount, `SELECT COUNT(*) FROM widgets WHERE id=$1`, widgetTx.ID); err != nil || insertedCount != 0 {
-			t.Fatalf("Create not rolled back: %d, %v", insertedCount, err)
-		}
-	})
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := repo.ByID(cancelled, product.ID); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled read: %v", err)
+	}
+	if err := repo.Save(cancelled, &models.Product{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled save: %v", err)
+	}
+	if got := repository.NewWidget(conn).Table(); got != "widgets" {
+		t.Fatalf("simple repository table: %q", got)
+	}
 
 	widget := &models.Widget{}
 	if err := db.Create(ctx, conn, "widgets", widget); err != nil || widget.ID <= 0 {

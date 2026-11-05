@@ -67,6 +67,33 @@ func TestPostgres18(t *testing.T) {
 			t.Fatalf("generate %v: %v\n%s", args, err, out)
 		}
 	}
+	readme, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	section := strings.SplitN(string(readme), "## Transactions\n", 2)
+	if len(section) != 2 {
+		t.Fatal("README transactions section missing")
+	}
+	blocks := strings.SplitN(section[1], "```go\n", 2)
+	if len(blocks) != 2 {
+		t.Fatal("README transaction example missing")
+	}
+	method, _, found := strings.Cut(blocks[1], "\n```")
+	if !found {
+		t.Fatal("README transaction example is not closed")
+	}
+	file, err := os.OpenFile(filepath.Join(project, "internal", "repository", "product.go"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := fmt.Fprintf(file, "\n%s\n", method)
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if writeErr != nil {
+		t.Fatal(writeErr)
+	}
 	for direction, sql := range map[string]string{
 		"up":   "CREATE TABLE price_history (id integer PRIMARY KEY);\n",
 		"down": "DROP TABLE price_history;\n",

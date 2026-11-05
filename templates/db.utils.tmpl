@@ -12,8 +12,7 @@ func IsSerializationError(err error) bool {
 		return false
 	}
 
-	var pqErr *pq.Error
-	if errors.As(err, &pqErr) {
+	if pqErr, ok := errors.AsType[*pq.Error](err); ok {
 		return pqErr.Code == "40001" || pqErr.Code == "40P01"
 	}
 	if strings.Contains(err.Error(), "could not serialize access due to read/write dependencies among") {
