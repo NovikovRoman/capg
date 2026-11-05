@@ -1,0 +1,10 @@
+package models
+
+// {{.ModelTypeName}} structure.
+type {{.ModelTypeName}} struct {
+	ID int64 `db:"id" autoincrement:"true"`
+}
+
+func ({{.ReceiverName}} *{{.ModelTypeName}}) GetID() int64 {
+	return {{.ReceiverName}}.ID
+}

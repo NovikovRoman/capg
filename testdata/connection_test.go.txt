@@ -1,0 +1,41 @@
+package db
+
+import (
+	"net/url"
+	"strings"
+	"testing"
+)
+
+func TestWithTimeZone(t *testing.T) {
+	for _, tc := range []struct{ dsn, tz, want string }{
+		{`host=localhost password='a  b' timezone='UTC' user=postgres`, "Europe/Moscow", `host=localhost password='a  b' user=postgres TimeZone='Europe/Moscow'`},
+		{`password='a\'  b\\c' TimeZone = 'UTC'`, `a'b\c`, `password='a\'  b\\c' TimeZone='a\'b\\c'`},
+		{`timezone=UTC user=postgres TIMEZONE=Europe/Moscow`, "UTC", ` user=postgres TimeZone='UTC'`},
+		{`host=localhost`, "UTC", `host=localhost TimeZone='UTC'`},
+	} {
+		got, err := withTimeZone(tc.dsn, tc.tz)
+		if err != nil || got != tc.want {
+			t.Errorf("withTimeZone(%q, %q) = %q, %v; want %q", tc.dsn, tc.tz, got, err, tc.want)
+		}
+	}
+	got, err := withTimeZone("postgres://user:pass@localhost/db?timezone=UTC&TimeZone=Europe%2FMoscow&application_name=a+b", "Asia/Tokyo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+	if len(q) != 2 || q.Get("TimeZone") != "Asia/Tokyo" || q.Get("application_name") != "a b" {
+		t.Fatalf("unexpected query: %v", q)
+	}
+	for _, input := range []string{"password='unterminated", "password=ends\\", "not-an-option"} {
+		if _, err := withTimeZone(input, "UTC"); err == nil {
+			t.Errorf("expected error for %q", input)
+		}
+	}
+	if _, err := withTimeZone("host=localhost", "bad\x00zone"); err == nil || !strings.Contains(err.Error(), "NUL") {
+		t.Fatalf("NUL timezone error: %v", err)
+	}
+}

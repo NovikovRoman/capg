@@ -1,0 +1,71 @@
+package repository
+
+import (
+	"context"
+	"database/sql"
+	"time"
+
+	"{{.GoModulePath}}/internal/db"
+	"{{.GoModulePath}}/internal/models"
+	"github.com/lib/pq"
+)
+
+type {{.ModelTypeName}} struct {
+	table string
+	db    db.Executor
+}
+
+func New{{.ModelTypeName}}(executor db.Executor) *{{.ModelTypeName}} {
+	return &{{.ModelTypeName}}{
+		table: "{{.DatabaseTableName}}",
+		db:    executor,
+	}
+}
+
+func (r {{.ModelTypeName}}) Table() string {
+	return r.table
+}
+
+func (r *{{.ModelTypeName}}) ByID(ctx context.Context, id int64) (models.{{.ModelTypeName}}, error) {
+	var {{.ReceiverName}} models.{{.ModelTypeName}}
+	err := r.db.GetContext(ctx, &{{.ReceiverName}}, "SELECT * FROM "+pq.QuoteIdentifier(r.table)+" WHERE id = $1 AND deleted_at IS NULL", id)
+	return {{.ReceiverName}}, err
+}
+
+// ByIDIncludingDeleted finds a record regardless of its deletion status.
+func (r *{{.ModelTypeName}}) ByIDIncludingDeleted(ctx context.Context, id int64) (models.{{.ModelTypeName}}, error) {
+	var {{.ReceiverName}} models.{{.ModelTypeName}}
+	err := r.db.GetContext(ctx, &{{.ReceiverName}}, "SELECT * FROM "+pq.QuoteIdentifier(r.table)+" WHERE id = $1", id)
+	return {{.ReceiverName}}, err
+}
+
+// Delete soft-deletes an active record. It returns sql.ErrNoRows if no active record matches.
+func (r *{{.ModelTypeName}}) Delete(ctx context.Context, id int64) error {
+	now := time.Now().UTC()
+	return r.setDeletion(ctx, id, now, now, "deleted_at IS NULL")
+}
+
+// Restore restores a deleted record. It returns sql.ErrNoRows if no deleted record matches.
+func (r *{{.ModelTypeName}}) Restore(ctx context.Context, id int64) error {
+	return r.setDeletion(ctx, id, nil, time.Now().UTC(), "deleted_at IS NOT NULL")
+}
+
+func (r *{{.ModelTypeName}}) setDeletion(ctx context.Context, id int64, deletedAt any, updatedAt time.Time, condition string) error {
+	query := "UPDATE " + pq.QuoteIdentifier(r.table) + " SET deleted_at = $1, updated_at = $2 WHERE id = $3 AND " + condition
+	result, err := r.db.ExecContext(ctx, query, deletedAt, updatedAt, id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (r *{{.ModelTypeName}}) Save(ctx context.Context, {{.ReceiverName}} *models.{{.ModelTypeName}}) error {
+	return db.Save(ctx, r.db, r.table, {{.ReceiverName}})
+}

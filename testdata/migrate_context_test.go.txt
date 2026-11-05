@@ -1,0 +1,44 @@
+package pg
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/golang-migrate/migrate/v4"
+)
+
+func TestRunWithContextRequestsGracefulStop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := &migrate.Migrate{GracefulStop: make(chan bool, 1)}
+	started := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		result <- runWithContext(ctx, m, func() error {
+			close(started)
+			select {
+			case <-m.GracefulStop:
+				return nil
+			case <-time.After(time.Second):
+				return errors.New("graceful stop not received")
+			}
+		})
+	}()
+	<-started
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+}
+
+func TestRunWithContextAlreadyCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	ran := false
+	err := runWithContext(ctx, &migrate.Migrate{}, func() error { ran = true; return nil })
+	if !errors.Is(err, context.Canceled) || ran {
+		t.Fatalf("error = %v, ran = %v", err, ran)
+	}
+}

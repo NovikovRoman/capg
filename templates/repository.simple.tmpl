@@ -1,0 +1,19 @@
+package repository
+
+import "{{.GoModulePath}}/internal/db"
+
+type {{.ModelTypeName}} struct {
+	table string
+	db    db.Executor
+}
+
+func New{{.ModelTypeName}}(executor db.Executor) *{{.ModelTypeName}} {
+	return &{{.ModelTypeName}}{
+		table: "{{.DatabaseTableName}}",
+		db:    executor,
+	}
+}
+
+func (r {{.ModelTypeName}}) Table() string {
+	return r.table
+}

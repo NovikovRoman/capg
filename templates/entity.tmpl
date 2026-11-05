@@ -1,0 +1,30 @@
+package models
+
+import (
+	"time"
+)
+
+// {{.ModelTypeName}} structure.
+type {{.ModelTypeName}} struct {
+	ID int64 `db:"id" autoincrement:"true"`
+
+	CreatedAt time.Time  `db:"created_at"`
+	UpdatedAt time.Time  `db:"updated_at"`
+	DeletedAt *time.Time `db:"deleted_at"`
+}
+
+func ({{.ReceiverName}} *{{.ModelTypeName}}) GetID() int64 {
+	return {{.ReceiverName}}.ID
+}
+
+func ({{.ReceiverName}} *{{.ModelTypeName}}) GetCreatedAt() time.Time {
+	return {{.ReceiverName}}.CreatedAt
+}
+
+func ({{.ReceiverName}} *{{.ModelTypeName}}) GetUpdatedAt() time.Time {
+	return {{.ReceiverName}}.UpdatedAt
+}
+
+func ({{.ReceiverName}} *{{.ModelTypeName}}) GetDeletedAt() *time.Time {
+	return {{.ReceiverName}}.DeletedAt
+}

@@ -1,0 +1,58 @@
+package models
+
+import (
+	"bytes"
+	"database/sql/driver"
+	"encoding/json"
+	"fmt"
+)
+
+type {{.JSONTypeName}} struct {
+	Field1 int
+	Field2 string
+	Field3 bool
+}
+
+func ({{.ReceiverName}} {{.JSONTypeName}}) String() string {
+	b, _ := json.Marshal({{.ReceiverName}})
+	return string(b)
+}
+
+func ({{.ReceiverName}} *{{.JSONTypeName}}) Scan(val any) (err error) {
+	var value {{.JSONTypeName}}
+	switch v := val.(type) {
+	case []byte:
+		if bytes.Equal(v, []byte("[]")) || bytes.Equal(v, []byte("{}")) {
+			*{{.ReceiverName}} = value
+			return nil
+		}
+		err = json.Unmarshal(v, &value)
+
+	case string:
+		if v == "[]" || v == "{}" {
+			*{{.ReceiverName}} = value
+			return nil
+		}
+		err = json.Unmarshal([]byte(v), &value)
+
+	default:
+		err = fmt.Errorf("Unsupported type: %T", v)
+	}
+
+	if err == nil {
+		*{{.ReceiverName}} = value
+	}
+	return
+}
+
+func ({{.ReceiverName}} {{.JSONTypeName}}) Value() (driver.Value, error) {
+	return json.Marshal({{.ReceiverName}})
+}
+
+func ({{.ReceiverName}} {{.JSONTypeName}}) ConvertValue() (string, error) {
+	b, err := json.Marshal({{.ReceiverName}})
+	if err != nil {
+		return "{}", err
+	}
+	return string(b), nil
+}

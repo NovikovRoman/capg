@@ -1,0 +1,118 @@
+package pg
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+
+	"github.com/golang-migrate/migrate/v4"
+	"github.com/golang-migrate/migrate/v4/database/postgres"
+	_ "github.com/golang-migrate/migrate/v4/source/file"
+	_ "github.com/lib/pq"
+)
+
+func newMigrate(ctx context.Context, db *sql.DB, path string, force bool) (m *migrate.Migrate, err error) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	driver, err := postgres.WithConnection(ctx, conn, &postgres.Config{
+		MigrationsTable: "schema_migrations",
+		DatabaseName:    "migrations",
+	})
+	if err != nil {
+		return nil, errors.Join(err, conn.Close())
+	}
+
+	m, err = migrate.NewWithDatabaseInstance(fmt.Sprintf("file://%s", path), "migrations", driver)
+	if err != nil {
+		return nil, errors.Join(err, driver.Close())
+	}
+	if err = ctx.Err(); err == nil && force {
+		var version uint
+		version, _, err = m.Version()
+		if err == nil {
+			err = ctx.Err()
+		}
+		if err == nil {
+			err = m.Force(int(version))
+		}
+	}
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err != nil {
+		sourceErr, dbErr := m.Close()
+		return nil, errors.Join(err, sourceErr, dbErr)
+	}
+	return m, nil
+}
+
+func closeMigrate(m *migrate.Migrate, err *error) {
+	sourceErr, dbErr := m.Close()
+	*err = errors.Join(*err, sourceErr, dbErr)
+}
+
+// runWithContext requests a graceful stop between migrations when ctx is cancelled.
+// The migration driver does not interrupt an SQL statement already running.
+func runWithContext(ctx context.Context, m *migrate.Migrate, run func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			select {
+			case m.GracefulStop <- true:
+			default:
+			}
+		case <-done:
+		}
+	}()
+	err := run()
+	if errors.Is(err, migrate.ErrNoChange) {
+		err = nil
+	}
+	if ctx.Err() != nil {
+		return errors.Join(err, ctx.Err())
+	}
+	return err
+}
+
+// Migration applies all pending migrations. Cancellation requests a stop between migrations.
+func Migration(ctx context.Context, db *sql.DB, path string, force bool) error {
+	return MigrationUp(ctx, db, path, 0, force)
+}
+
+// MigrationUp applies pending migrations, limited to step when step is positive.
+func MigrationUp(ctx context.Context, db *sql.DB, path string, step int, force bool) (err error) {
+	m, err := newMigrate(ctx, db, path, force)
+	if err != nil {
+		return err
+	}
+	defer closeMigrate(m, &err)
+
+	return runWithContext(ctx, m, func() error {
+		if step > 0 {
+			return m.Steps(step)
+		}
+		return m.Up()
+	})
+}
+
+// MigrationDown rolls back a positive number of migrations.
+func MigrationDown(ctx context.Context, db *sql.DB, path string, step int, force bool) (err error) {
+	if step <= 0 {
+		return errors.New("steps must be positive")
+	}
+	m, err := newMigrate(ctx, db, path, force)
+	if err != nil {
+		return err
+	}
+	defer closeMigrate(m, &err)
+
+	return runWithContext(ctx, m, func() error { return m.Steps(-step) })
+}

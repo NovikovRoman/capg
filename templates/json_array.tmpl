@@ -1,0 +1,31 @@
+package models
+
+import (
+	"database/sql/driver"
+	"encoding/json"
+	"fmt"
+)
+
+type {{.JSONTypeName}} []string // Change the element type if necessary.
+
+func ({{.ReceiverName}} {{.JSONTypeName}}) String() string {
+	b, _ := json.Marshal({{.ReceiverName}})
+	return string(b)
+}
+
+func ({{.ReceiverName}} *{{.JSONTypeName}}) Scan(val any) (err error) {
+	switch v := val.(type) {
+	case []byte:
+		return json.Unmarshal(v, &{{.ReceiverName}})
+
+	case string:
+		return json.Unmarshal([]byte(v), &{{.ReceiverName}})
+
+	default:
+		return fmt.Errorf("Unsupported type: %T. ", v)
+	}
+}
+
+func ({{.ReceiverName}} {{.JSONTypeName}}) Value() (driver.Value, error) {
+	return json.Marshal({{.ReceiverName}})
+}

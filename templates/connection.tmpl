@@ -1,0 +1,121 @@
+package db
+
+import (
+	"context"
+	"fmt"
+	"net/url"
+	"strings"
+	"time"
+	"unicode"
+
+	"github.com/jmoiron/sqlx"
+	_ "github.com/lib/pq"
+)
+
+// ConnectWithTZ connects with the specified PostgreSQL session time zone.
+func ConnectWithTZ(ctx context.Context, dsn, tz string) (*sqlx.DB, error) {
+	dsn, err := withTimeZone(dsn, tz)
+	if err != nil {
+		return nil, err
+	}
+	return Connect(ctx, dsn)
+}
+
+// withTimeZone preserves other DSN options, including quoted values and escapes.
+func withTimeZone(dsn, tz string) (string, error) {
+	if strings.ContainsRune(tz, '\x00') {
+		return "", fmt.Errorf("time zone contains a NUL byte")
+	}
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			return "", err
+		}
+		q := u.Query()
+		for key := range q {
+			if strings.EqualFold(key, "timezone") {
+				q.Del(key)
+			}
+		}
+		q.Set("TimeZone", tz)
+		u.RawQuery = q.Encode()
+		return u.String(), nil
+	}
+
+	// Scan lib/pq keyword/value syntax without splitting quoted values on spaces.
+	runes := []rune(dsn)
+	var result strings.Builder
+	for i := 0; i < len(runes); {
+		start := i
+		for i < len(runes) && unicode.IsSpace(runes[i]) {
+			i++
+		}
+		if i == len(runes) {
+			result.WriteString(string(runes[start:i]))
+			break
+		}
+		keyStart := i
+		for i < len(runes) && !unicode.IsSpace(runes[i]) && runes[i] != '=' {
+			i++
+		}
+		key := string(runes[keyStart:i])
+		for i < len(runes) && unicode.IsSpace(runes[i]) {
+			i++
+		}
+		if key == "" || i == len(runes) || runes[i] != '=' {
+			return "", fmt.Errorf("invalid connection option %q: expected key=value", key)
+		}
+		i++
+		for i < len(runes) && unicode.IsSpace(runes[i]) {
+			i++
+		}
+		if i < len(runes) && runes[i] == '\'' {
+			i++
+			closed := false
+			for i < len(runes) {
+				if runes[i] == '\\' {
+					i++
+					if i == len(runes) {
+						return "", fmt.Errorf("invalid connection option %q: trailing escape", key)
+					}
+				} else if runes[i] == '\'' {
+					i++
+					closed = true
+					break
+				}
+				i++
+			}
+			if !closed {
+				return "", fmt.Errorf("invalid connection option %q: unterminated quote", key)
+			}
+		} else {
+			for i < len(runes) && !unicode.IsSpace(runes[i]) {
+				if runes[i] == '\\' {
+					i++
+					if i == len(runes) {
+						return "", fmt.Errorf("invalid connection option %q: trailing escape", key)
+					}
+				}
+				i++
+			}
+		}
+		if !strings.EqualFold(key, "timezone") {
+			result.WriteString(string(runes[start:i]))
+		}
+	}
+	escaped := strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(tz)
+	return result.String() + " TimeZone='" + escaped + "'", nil
+}
+
+func Connect(ctx context.Context, dsn string) (*sqlx.DB, error) {
+	db, err := sqlx.ConnectContext(ctx, "postgres", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("db: %w", err)
+	}
+
+	db.SetMaxOpenConns(20)
+	db.SetMaxIdleConns(2)
+	db.SetConnMaxLifetime(time.Minute)
+
+	return db, nil
+}
